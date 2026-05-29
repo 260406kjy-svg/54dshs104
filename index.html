@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>오량 모의 주식 투자 (실시간 연동)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useRef } = React;
+
+        // Firebase 공식 모듈 임포트
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ==========================================
+        // 🔐 사용자 요청 Firebase 프로젝트 정보 적용 완료
+        // ==========================================
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyC3w22c40xKa_Jr4sG7WnWzA-P3s-ExyTw",
+            authDomain: "dshs104.firebaseapp.com",
+            projectId: "dshs104",
+            storageBucket: "dshs104.firebasestorage.app",
+            messagingSenderId: "103844634020",
+            appId: "1:103844634020:web:bfc8de29d8afc164f83531",
+            measurementId: "G-N9Q209XFTM"
+        };
+
+        const appId = 'dshs104-invest'; // 데이터베이스 충돌 방지를 위한 고유 ID
+
+        // 아이콘 헬퍼
+        const Icon = ({ icon, className = "", size }) => (
+            <i className={`fas ${icon} ${className}`} style={{ fontSize: size ? `${size}px` : undefined }}></i>
+        );
+
+        // --- 초기 모의 데이터 ---
+        const INITIAL_STOCKS = [
+          { id: 'samsung', name: '삼성전자 (가상 외부기업)', price: 75000, history: [73000, 74500, 74000, 75500, 75000] },
+          { id: 'sk', name: 'SK하이닉스 (가상 외부기업)', price: 150000, history: [148000, 149000, 151000, 149500, 150000] },
+          { id: 'team_1', name: '4반 1조 기업 (공모 청약 완료)', price: 10000, history: [10000, 10500, 11000, 10800, 10000] },
+          { id: 'team_2', name: '4반 2조 기업 (공모 청약 완료)', price: 10000, history: [10000, 9500, 9800, 10200, 10000] },
+          { id: 'team_3', name: '4반 3조 기업 (청약 대기중)', price: 5000, history: [5000, 5000, 5000, 5000, 5000] },
+        ];
+
+        const INITIAL_REPORTS = [
+            { id: 1, title: "[공모 청약 결과] 1조, 2조 정식 상장 완료!", content: "학급 회의를 통해 1조와 2조의 공모 청약이 성공적으로 완료되어 매매를 개시합니다.", date: "2026-05-29" }
+        ];
+
+        const ACTIVITY_INFO = {
+          title: "2026학년도 1학기 1학년 4반 학급특색사업",
+          subtitle: "오량 모의 주식 투자 프로그램",
+          schedule: "매주 수/금 자율자치활동 시간",
+          location: "1-4 교실",
+          bgTheories: ["경험 학습", "사회구성주의", "상황 학습"]
+        };
+
+        const app = initializeApp(FIREBASE_CONFIG);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        // ==========================================
+        // 메인 앱 컴포넌트
+        // ==========================================
+        function App() {
+          const [fbUser, setFbUser] = useState(null);
+          const [currentUser, setCurrentUser] = useState(null);
+          
+          // 시스템 에러 상태
+          const [authError, setAuthError] = useState(null);
+          const [dbError, setDbError] = useState(null);
+          
+          const [stocks, setStocks] = useState([]);
+          const [users, setUsers] = useState([]);
+          const [reports, setReports] = useState([]);
+          const [allChats, setAllChats] = useState([]);
+          
+          // 동적 관리자 코드 상태
+          const [adminCode, setAdminCode] = useState('oryang2026');
+
+          // 1. Firebase 로그인 상태 변화 실시간 감지
+          useEffect(() => {
+            const unsub = onAuthStateChanged(auth, (user) => {
+              if (user) {
+                setFbUser(user);
+              } else {
+                setFbUser(null);
+                setCurrentUser(null);
+              }
+            }, (error) => setAuthError(error.message));
+
+            return () => unsub();
+          }, []);
+
+          // 2. 실시간 데이터베이스 구독
+          useEffect(() => {
+            if (!fbUser) return;
+
+            try {
+                // 주식 시장 동기화
+                const unsubStocks = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'stocks'), (snap) => {
+                    if (snap.exists()) {
+                        setStocks(snap.data().list);
+                    } else {
+                        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'stocks'), { list: INITIAL_STOCKS }).catch(err => setDbError(err.message));
+                    }
+                }, (error) => setDbError(error.message));
+
+                // 보고서 동기화
+                const unsubReports = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'reports'), (snap) => {
+                    if (snap.exists()) {
+                        setReports(snap.data().list);
+                    } else {
+                        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'reports'), { list: INITIAL_REPORTS }).catch(err => setDbError(err.message));
+                    }
+                }, (error) => setDbError(error.message));
+
+                // 유저 데이터 동기화
+                const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
+                    const uList = [];
+                    snap.forEach(d => uList.push(d.data()));
+                    setUsers(uList);
+                }, (error) => setDbError(error.message));
+
+                // 채팅 동기화
+                const unsubChats = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'chats'), (snap) => {
+                    const cList = [];
+                    snap.forEach(d => cList.push({ id: d.id, ...d.data() }));
+                    cList.sort((a, b) => a.timestamp - b.timestamp);
+                    setAllChats(cList);
+                }, (error) => setDbError(error.message));
+
+                // 동적 관리자 코드 동기화
+                const unsubAdminConfig = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'config'), (snap) => {
+                    if (snap.exists() && snap.data().adminCode) {
+                        setAdminCode(snap.data().adminCode);
+                    } else {
+                        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'config'), { adminCode: 'oryang2026' })
+                           .catch(err => setDbError(err.message));
+                    }
+                }, (error) => setDbError(error.message));
+
+                return () => { unsubStocks(); unsubReports(); unsubUsers(); unsubChats(); unsubAdminConfig(); };
+            } catch(e) {
+                setDbError(e.message);
+            }
+          }, [fbUser]);
+
+          // 유저 프로필 매칭 및 바인딩
+          useEffect(() => {
+             if (fbUser && users.length > 0) {
+                 const existing = users.find(u => u.id === fbUser.uid);
+                 if (existing) {
+                     setCurrentUser(existing);
+                 }
+             }
+          }, [fbUser, users]);
+
+          // 구글 로그인 트리거
+          const handleGoogleSignIn = async (role) => {
+              try {
+                  const result = await signInWithPopup(auth, provider);
+                  const user = result.user;
+                  
+                  // 기존 등록된 유저인지 체크
+                  const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid));
+                  
+                  if (!userDoc.exists()) {
+                      // 신규 가입 프로세스 진행
+                      const isClass4 = role === 'class4';
+                      const newUser = {
+                          id: user.uid,
+                          name: user.displayName || "익명학생",
+                          email: user.email,
+                          role: role,
+                          balance: isClass4 ? 1000000 : 500000,
+                          portfolio: {},
+                          isBanned: false
+                      };
+                      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), newUser);
+                      setCurrentUser(newUser);
+                  } else {
+                      const existingUser = userDoc.data();
+                      if (existingUser.isBanned) {
+                          await signOut(auth);
+                          alert("해당 구글 계정은 정지 상태이므로 접속이 불가능합니다.");
+                          return;
+                      }
+                      // 기존 가입된 사용자의 역할(Role)이 다를 경우 보정
+                      if (existingUser.role !== role) {
+                         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), { role });
+                         existingUser.role = role;
+                      }
+                      setCurrentUser(existingUser);
+                  }
+              } catch (err) {
+                  setAuthError(err.message);
+              }
+          };
+
+          // 관리자(교사) 수동 진입 프로세스
+          const handleAdminSignIn = async () => {
+              try {
+                  const result = await signInWithPopup(auth, provider);
+                  const user = result.user;
+                  
+                  const newUser = {
+                      id: user.uid,
+                      name: "선생님 (관리자)",
+                      email: user.email,
+                      role: 'admin',
+                      balance: 0,
+                      portfolio: {},
+                      isBanned: false
+                  };
+                  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), newUser);
+                  setCurrentUser(newUser);
+              } catch(err) {
+                  setAuthError(err.message);
+              }
+          };
+
+          // 로그아웃 (Auth 세션 완벽 종료)
+          const handleLogout = async () => {
+              try {
+                  await signOut(auth);
+                  setFbUser(null);
+                  setCurrentUser(null);
+                  alert("성공적으로 로그아웃 되었습니다.");
+              } catch (err) {
+                  alert("로그아웃 에러: " + err.message);
+              }
+          };
+
+          if (authError) {
+              return (
+                  <div className="min-h-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
+                      <Icon icon="fa-lock" size={48} className="text-red-500 mb-4" />
+                      <h2 className="text-xl font-bold text-red-800">구글 로그인(Auth) 설정 에러</h2>
+                      <p className="text-sm text-red-600 mt-2 max-w-lg">
+                          Firebase 콘솔에서 <strong>'Google 로그인'</strong> 제공업체가 활성화되어 있지 않습니다.<br/><br/>
+                          👉 [Firebase 콘솔] -> [Authentication] -> [Sign-in method] 에서 'Google'을 추가하고 '사용 설정'으로 활성화 하신 뒤 저장하세요.
+                      </p>
+                      <pre className="mt-6 p-4 bg-red-100 rounded text-xs text-red-800 font-mono text-left max-w-lg overflow-x-auto border border-red-200">오류코드: {authError}</pre>
+                  </div>
+              );
+          }
+
+          if (dbError) {
+              return (
+                  <div className="min-h-screen flex flex-col items-center justify-center bg-orange-50 p-6 text-center">
+                      <Icon icon="fa-database" size={48} className="text-orange-500 mb-4" />
+                      <h2 className="text-xl font-bold text-orange-800">데이터베이스 권한(Rules) 에러</h2>
+                      <p className="text-sm text-orange-700 mt-2 max-w-lg leading-relaxed">
+                          Firebase Firestore 데이터베이스에서 읽기/쓰기를 차단 중입니다.<br/><br/>
+                          👉 [Firebase 콘솔] -> [Firestore Database] -> <strong>[규칙(Rules)] 탭</strong>으로 이동 후 규칙을 <strong>allow read, write: if true;</strong>로 설정하고 게시하세요.
+                      </p>
+                      <pre className="mt-4 text-[10px] text-orange-600">오류코드: {dbError}</pre>
+                  </div>
+              );
+          }
+
+          // 로딩 화면
+          if (fbUser && stocks.length === 0) {
+              return (
+                  <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+                      <Icon icon="fa-spinner fa-spin" size={36} className="text-emerald-600" />
+                      <p className="text-sm text-gray-500 mt-4 font-bold tracking-widest">데이터베이스 동기화 및 갱신 중...</p>
+                  </div>
+              );
+          }
+
+          if (!currentUser) return <LoginScreen onGoogleSignIn={handleGoogleSignIn} onAdminSignIn={handleAdminSignIn} expectedAdminCode={adminCode} />;
+          if (currentUser.isBanned) return <div className="min-h-screen flex flex-col items-center justify-center bg-red-50 text-red-600 font-bold p-8"><Icon icon="fa-ban" size={48} className="mb-4" /> 관리자에 의해 정지된 계정입니다.</div>;
+
+          const class4Chat = allChats.filter(c => c.room === 'class4');
+          const publicChat = allChats.filter(c => c.room === 'public');
+
+          return (
+            <div className="min-h-screen bg-gray-50 flex flex-col font-sans animate-fadeIn">
+              <header className="bg-emerald-700 text-white p-4 shadow-md flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="bg-emerald-600 p-2 rounded-lg"><Icon icon="fa-chart-line" size={20} /></div>
+                  <div>
+                    <h1 className="text-lg font-bold leading-none">오량 모의 주식 투자</h1>
+                    <span className="text-[11px] text-emerald-200">54회 1학년 4반 학급특색사업</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="bg-emerald-800 px-3 py-1 rounded-full text-xs font-semibold">
+                    <Icon icon="fa-user" className="mr-1" />
+                    {currentUser.name} ({currentUser.role === 'admin' ? '관리자' : currentUser.role === 'class4' ? '1-4반' : '전교생'})
+                  </span>
+                  <button onClick={handleLogout} className="bg-emerald-600 hover:bg-emerald-500 transition-all px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1">
+                    <Icon icon="fa-sign-out-alt" /> 로그아웃
+                  </button>
+                </div>
+              </header>
+
+              <main className="flex-1 p-4 max-w-7xl mx-auto w-full">
+                {currentUser.role === 'admin' && (
+                  <AdminDashboard db={db} appId={appId} users={users} stocks={stocks} reports={reports} adminCode={adminCode} setDbError={setDbError} />
+                )}
+                {currentUser.role === 'class4' && (
+                  <Class4Dashboard user={currentUser} stocks={stocks} chat={class4Chat} db={db} appId={appId} fbUserId={fbUser.uid} reports={reports} setDbError={setDbError} />
+                )}
+                {currentUser.role === 'public' && (
+                  <PublicDashboard user={currentUser} stocks={stocks} chat={publicChat} db={db} appId={appId} fbUserId={fbUser.uid} reports={reports} setDbError={setDbError} />
+                )}
+              </main>
+            </div>
+          );
+        }
+
+        // ==========================================
+        // 로그인 화면 (실제 구글 인증 로그인 연동)
+        // ==========================================
+        function LoginScreen({ onGoogleSignIn, onAdminSignIn, expectedAdminCode }) {
+          const [step, setStep] = useState('initial');
+          const [adminCodeInput, setAdminCodeInput] = useState('');
+          const [error, setError] = useState('');
+          const [isLoading, setIsLoading] = useState(false);
+
+          const handleAdminSubmit = async (e) => {
+            e.preventDefault();
+            if (adminCodeInput === expectedAdminCode) {
+              setIsLoading(true);
+              await onAdminSignIn();
+              setIsLoading(false);
+            } else {
+              setError('보안 인증 코드가 올바르지 않습니다.');
+            }
+          };
+
+          const handleStudentSignIn = async (role) => {
+             setIsLoading(true);
+             await onGoogleSignIn(role);
+             setIsLoading(false);
+          };
+
+          return (
+            <div className="min-h-screen bg-emerald-50 flex items-center justify-center p-4">
+              {isLoading ? (
+                 <div className="text-center p-8 bg-white rounded-2xl shadow-xl">
+                     <Icon icon="fa-spinner fa-spin text-emerald-600" size={48} />
+                     <p className="mt-4 text-sm font-semibold text-gray-500">Google 연동 로그인 처리 중...</p>
+                 </div>
+              ) : (
+                <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center border border-emerald-100 animate-fadeIn">
+                  <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Icon icon="fa-chart-line" size={32} />
+                  </div>
+                  <h1 className="text-2xl font-black text-gray-800 mt-3 mb-1">오량 모의 투자 포털</h1>
+                  <p className="text-emerald-600 font-bold mb-8 text-xs bg-emerald-50 py-1 rounded">✅ 클라우드 & 실시간 동기화 지원</p>
+                  
+                  {step === 'initial' && (
+                    <div className="space-y-4">
+                      <button onClick={() => setStep('student')} className="w-full flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white p-4 rounded-xl font-bold text-lg transition-all shadow-md">
+                        <Icon icon="fa-user-graduate" size={20} /> 학생 로그인 (Google)
+                      </button>
+                      <div className="pt-4 border-t border-gray-100 mt-4">
+                        <button onClick={() => setStep('admin')} className="w-full flex items-center justify-center gap-2 bg-gray-800 text-white p-3 rounded-lg font-medium text-sm">
+                          <Icon icon="fa-lock" size={14} /> 관리자 교사 인증
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {step === 'student' && (
+                    <div className="space-y-3">
+                      <h3 className="text-sm font-bold text-gray-700 mb-2">소속을 선택해 주세요</h3>
+                      
+                      <button onClick={() => handleStudentSignIn('class4')} className="w-full bg-blue-50 border border-blue-200 hover:bg-blue-100 p-4 rounded-xl text-left transition-all flex justify-between items-center">
+                          <div>
+                            <div className="font-bold text-blue-800 text-sm">1학년 4반 학생</div>
+                            <div className="text-xs text-blue-600">구글 계정으로 연동 로그인 (초기자금 100만)</div>
+                          </div>
+                          <Icon icon="fa-google" className="text-blue-500" size={18} />
+                      </button>
+
+                      <button onClick={() => handleStudentSignIn('public')} className="w-full bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 p-4 rounded-xl text-left transition-all flex justify-between items-center">
+                          <div>
+                            <div className="font-bold text-emerald-800 text-sm">일반 학생 / 타반 학생</div>
+                            <div className="text-xs text-emerald-600">구글 계정으로 연동 로그인 (초기자금 50만)</div>
+                          </div>
+                          <Icon icon="fa-google" className="text-emerald-500" size={18} />
+                      </button>
+                      
+                      <button onClick={() => setStep('initial')} className="w-full text-gray-400 hover:text-gray-600 p-2 text-xs">돌아가기</button>
+                    </div>
+                  )}
+
+                  {step === 'admin' && (
+                    <form onSubmit={handleAdminSubmit} className="space-y-4 text-left">
+                      <h3 className="text-sm font-bold text-gray-800 text-center">교사 인증 코드</h3>
+                      <input 
+                        type="password" value={adminCodeInput} onChange={(e) => {setAdminCodeInput(e.target.value); setError('');}}
+                        placeholder="보안 코드 입력" 
+                        className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-emerald-600 text-center tracking-widest" autoFocus
+                      />
+                      {error && <p className="text-red-500 text-xs font-semibold text-center">{error}</p>}
+                      <button type="submit" className="w-full bg-gray-800 text-white p-3 rounded-xl font-bold flex items-center justify-center gap-2">
+                        <Icon icon="fa-google" /> 구글 로그인으로 교사 인증
+                      </button>
+                      <button type="button" onClick={() => setStep('initial')} className="w-full text-gray-500 p-2 text-xs text-center">취소</button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        // ==========================================
+        // 관리자 대시보드
+        // ==========================================
+        function AdminDashboard({ db, appId, users, stocks, reports, adminCode, setDbError }) {
+          const [newReport, setNewReport] = useState({ title: '', content: '' });
+          const [newAdminCodeInput, setNewAdminCodeInput] = useState('');
+
+          const simulateMarket = async () => {
+            try {
+                const newStocks = stocks.map(stock => {
+                  if (stock.id === 'team_3') return stock;
+                  const changePercent = (Math.random() - 0.5) * 0.1; 
+                  const newPrice = Math.max(100, Math.floor(stock.price * (1 + changePercent)));
+                  return { ...stock, price: newPrice, history: [...stock.history.slice(-19), newPrice] };
+                });
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'stocks'), { list: newStocks });
+            } catch(e) { setDbError(e.message); }
+          };
+
+          const updatePrice = async (stockId, newPrice) => {
+            try {
+                const newStocks = stocks.map(s => s.id === stockId ? { ...s, price: Number(newPrice), history: [...s.history, Number(newPrice)] } : s);
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'stocks'), { list: newStocks });
+            } catch(e) { setDbError(e.message); }
+          };
+
+          const toggleBan = async (userId, currentState) => {
+             try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { isBanned: !currentState }); } catch(e) { setDbError(e.message); }
+          };
+
+          const handleAddReport = async (e) => {
+            e.preventDefault();
+            if (newReport.title && newReport.content) {
+              try {
+                  const newList = [{ id: Date.now(), ...newReport, date: new Date().toLocaleDateString() }, ...reports];
+                  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'reports'), { list: newList });
+                  setNewReport({ title: '', content: '' });
+              } catch(e) { setDbError(e.message); }
+            }
+          };
+
+          // 🔑 관리자 보안 인증 코드 동적 변경 함수
+          const handleUpdateAdminCode = async (e) => {
+             e.preventDefault();
+             if (newAdminCodeInput.trim().length < 4) {
+                 alert("보안 코드는 최소 4자 이상 입력해 주세요.");
+                 return;
+             }
+             try {
+                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', 'config'), { adminCode: newAdminCodeInput.trim() });
+                 alert(`관리자 코드가 [ ${newAdminCodeInput} ] 로 정상 변경되었습니다.`);
+                 setNewAdminCodeInput('');
+             } catch(e) {
+                 setDbError(e.message);
+             }
+          };
+
+          return (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="bg-emerald-50 border-l-4 border-emerald-600 p-4 rounded-r-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-emerald-800">선생님 전용 관리 콘솔 (실시간 동기화 작동 중)</h2>
+                  <p className="text-xs text-emerald-600 mt-1">현재 설정된 관리자 보안 인증 코드: <span className="font-mono font-bold bg-emerald-100 px-1.5 py-0.5 rounded">{adminCode}</span></p>
+                </div>
+                
+                {/* 🔑 관리자 코드 변경 폼 */}
+                <form onSubmit={handleUpdateAdminCode} className="flex gap-2 w-full md:w-auto">
+                    <input 
+                      type="text" value={newAdminCodeInput} onChange={e => setNewAdminCodeInput(e.target.value)}
+                      placeholder="새로운 관리자 코드" 
+                      className="border border-emerald-300 rounded-lg p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono w-full md:w-40"
+                    />
+                    <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg whitespace-nowrap transition-colors">
+                      코드 변경
+                    </button>
+                </form>
+              </div>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+                  <div className="flex justify-between items-center mb-4 border-b pb-2">
+                    <h3 className="text-sm font-bold flex items-center gap-2"><Icon icon="fa-sliders" className="text-emerald-600"/> 주가 수동/자동 변동</h3>
+                    <button onClick={simulateMarket} className="bg-emerald-600 text-white px-2 py-1 rounded text-xs font-bold">AI 일괄 무작위변동</button>
+                  </div>
+                  <div className="space-y-3.5">
+                    {stocks.map(stock => (
+                      <div key={stock.id} className="p-3 bg-gray-50 rounded-lg">
+                        <div className="text-xs font-semibold mb-1">{stock.name}</div>
+                        <div className="flex items-center gap-2">
+                          <input type="number" value={stock.price} onChange={(e) => updatePrice(stock.id, e.target.value)} className="border p-1.5 rounded text-xs text-right w-full font-mono" />
+                          <span className="text-xs text-gray-500">원</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 lg:col-span-2 overflow-x-auto">
+                  <h3 className="text-sm font-bold flex items-center gap-2 mb-4 border-b pb-2"><Icon icon="fa-users" className="text-blue-600"/> 참여 학생 명부 및 자산 상태</h3>
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead className="bg-gray-50 text-gray-600">
+                      <tr><th className="p-3">이름/구글이메일</th><th className="p-3">소속</th><th className="p-3">보유 예치금</th><th className="p-3">상태</th><th className="p-3 text-center">패널티</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {users.filter(u => u.role !== 'admin').map(user => (
+                        <tr key={user.id}>
+                          <td className="p-3 font-semibold">
+                             <div>{user.name}</div>
+                             <div className="text-[10px] text-gray-400 font-normal">{user.email || "No 구글 이메일"}</div>
+                          </td>
+                          <td className="p-3"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${user.role === 'class4' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>{user.role === 'class4' ? '1-4반' : '일반'}</span></td>
+                          <td className="p-3 font-mono">{user.balance.toLocaleString()} 원</td>
+                          <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${user.isBanned ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{user.isBanned ? '정지됨' : '정상'}</span></td>
+                          <td className="p-3 text-center"><button onClick={() => toggleBan(user.id, user.isBanned)} className={`px-2 py-1 rounded text-[10px] font-bold ${user.isBanned ? 'bg-green-600 text-white' : 'bg-red-500 text-white'}`}>{user.isBanned ? '해제' : '거래정지'}</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 lg:col-span-3">
+                  <h3 className="text-sm font-bold flex items-center gap-2 mb-4 border-b pb-2"><Icon icon="fa-file-signature" className="text-amber-600"/> 시장 중요 공시 / 보고서 발행</h3>
+                  <form onSubmit={handleAddReport} className="flex gap-4 mb-5">
+                    <input type="text" placeholder="제목" className="border p-2.5 rounded-lg text-xs flex-1" value={newReport.title} onChange={e => setNewReport({...newReport, title: e.target.value})} />
+                    <input type="text" placeholder="내용" className="border p-2.5 rounded-lg text-xs w-1/2" value={newReport.content} onChange={e => setNewReport({...newReport, content: e.target.value})} />
+                    <button type="submit" className="bg-emerald-600 text-white font-bold px-4 rounded-lg text-xs whitespace-nowrap">즉시공시</button>
+                  </form>
+                  <div className="space-y-2">
+                    {reports.map(r => (
+                      <div key={r.id} className="p-3 bg-gray-50 border rounded-lg text-xs flex justify-between items-center">
+                        <div><span className="font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded mr-2">공시</span><strong>{r.title}</strong> - {r.content}</div>
+                        <span className="text-gray-400 font-mono">{r.date}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // ==========================================
+        // 학생 대시보드 공통 로직
+        // ==========================================
+        function DashboardWrapper({ user, stocks, chat, db, appId, fbUserId, reports, isClass4, setDbError }) {
+          const [selectedStock, setSelectedStock] = useState(stocks[0]);
+          const [tradeQty, setTradeQty] = useState(1);
+
+          const calculateTotalAssets = () => {
+            let total = user.balance;
+            Object.entries(user.portfolio || {}).forEach(([stockId, qty]) => {
+              const stock = stocks.find(s => s.id === stockId);
+              if (stock) total += stock.price * qty;
+            });
+            return total;
+          };
+
+          const handleTrade = async (type) => {
+            const cost = selectedStock.price * tradeQty;
+            const currentQty = user.portfolio?.[selectedStock.id] || 0;
+            let newBalance = user.balance;
+            let newQty = currentQty;
+
+            if (type === 'buy') {
+              if (user.balance < cost) return alert("잔액이 부족합니다.");
+              newBalance -= cost;
+              newQty += tradeQty;
+            } else {
+              if (currentQty < tradeQty) return alert("매도할 보유 주식이 부족합니다.");
+              newBalance += cost;
+              newQty -= tradeQty;
+            }
+
+            try {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', fbUserId), {
+                    balance: newBalance,
+                    [`portfolio.${selectedStock.id}`]: newQty
+                });
+            } catch (e) {
+                setDbError(e.message);
+            }
+          };
+
+          return (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="bg-gradient-to-r from-emerald-700 to-teal-800 text-white p-5 rounded-2xl shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <span className="bg-emerald-600/50 text-emerald-200 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">REALTIME CLOUD CONNECTED</span>
+                  <h2 className="text-xl font-bold mt-2">{ACTIVITY_INFO.title}</h2>
+                  <p className="text-xs text-emerald-200 mt-1"><Icon icon="fa-location-dot" className="mr-1" /> {ACTIVITY_INFO.location} | {ACTIVITY_INFO.schedule}</p>
+                </div>
+                <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-xs">
+                  <span className="font-bold block text-emerald-200 mb-1">총 평가 자산 (예치금+주식)</span>
+                  <div className="text-2xl font-black font-mono">{calculateTotalAssets().toLocaleString()} 원</div>
+                </div>
+              </div>
+
+              {/* 최신 공시 알림 */}
+              {reports.length > 0 && (
+                <div className="bg-amber-50 border-l-4 border-amber-500 p-3 rounded-r-lg text-xs flex items-center gap-2 animate-pulse">
+                    <Icon icon="fa-bullhorn" className="text-amber-600 font-bold" />
+                    <span className="font-bold text-amber-800">[최신공시]</span>
+                    <span className="text-gray-700 font-medium">{reports[0].title} - {reports[0].content}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col lg:flex-row gap-6">
+                <div className="flex-1 space-y-6">
+                  <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-700 mb-4"><Icon icon="fa-chart-area" className="text-emerald-600" /> 실시간 모의 거래소</h3>
+                    <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+                      {stocks.map(stock => (
+                        <button key={stock.id} onClick={() => setSelectedStock(stock)} className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${selectedStock.id === stock.id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600'}`}>{stock.name}</button>
+                      ))}
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-xl border mb-4">
+                      <div className="text-xs text-gray-400 font-bold uppercase">MARKET LIVE</div>
+                      <div className="text-lg font-bold text-gray-800">{selectedStock.name}</div>
+                      <div className="text-3xl font-black text-gray-900 mt-1 font-mono">{selectedStock.price.toLocaleString()} <span className="text-sm font-normal text-gray-500">원</span></div>
+                      <div className="h-44 w-full bg-white border rounded-lg p-2 mt-4"><SimpleGraph history={selectedStock.history} color="#10b981" height={160} /></div>
+                    </div>
+
+                    <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100/50">
+                      <h4 className="font-bold text-xs text-emerald-800 mb-3">거래 주문서</h4>
+                      <div className="flex items-center justify-between gap-4 mb-4">
+                        <div className="flex items-center gap-2">
+                          <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(Math.max(1, Number(e.target.value)))} className="border-2 border-emerald-200 p-2 rounded-lg w-24 text-center bg-white text-sm font-bold font-mono focus:outline-none" />
+                          <span className="text-xs font-bold text-gray-500">주</span>
+                        </div>
+                        <span className="text-xs text-gray-500">총 결제 대금: <strong className="text-base text-gray-800 font-mono font-black font-semibold">{(selectedStock.price * tradeQty).toLocaleString()}</strong> 원</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => handleTrade('buy')} className="flex-1 bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-bold text-sm shadow-sm transition-colors">즉시 매수 (Buy)</button>
+                        <button onClick={() => handleTrade('sell')} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold text-sm shadow-sm transition-colors">즉시 매도 (Sell)</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-full lg:w-80 space-y-6 flex flex-col">
+                  <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
+                    <h3 className="font-bold text-sm mb-1">나의 보유 잔고</h3>
+                    <div className="text-xl font-black text-emerald-600 font-mono mb-4">{user.balance.toLocaleString()} 원</div>
+                    <h4 className="text-xs font-bold text-gray-400 mb-2 border-b pb-1">보유 가상 주식 현황</h4>
+                    <div className="space-y-1.5 text-xs">
+                       {Object.entries(user.portfolio || {}).map(([stockId, qty]) => {
+                          if(qty <= 0) return null;
+                          const stock = stocks.find(s => s.id === stockId);
+                          return <div key={stockId} className="flex justify-between p-1.5 bg-gray-50 rounded"><span>{stock?.name}</span><span className="font-bold font-mono text-emerald-700">{qty}주</span></div>;
+                       })}
+                       {Object.values(user.portfolio || {}).every(v => v === 0) && <div className="text-gray-400 text-center py-2">보유 주식이 없습니다.</div>}
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex-1 flex flex-col min-h-[350px]">
+                    <div className="p-3 border-b bg-gray-50 rounded-t-xl font-bold text-xs flex justify-between items-center">
+                      <span>{isClass4 ? '🔊 1-4반 실시간 단톡방' : '💬 전교생 자유 광장'}</span>
+                      <span className="text-emerald-600 text-[9px] font-bold"><Icon icon="fa-circle" className="animate-pulse mr-1"/>연동중</span>
+                    </div>
+                    <LiveChatSystem chat={chat} db={db} appId={appId} room={isClass4 ? 'class4' : 'public'} userName={user.name} setDbError={setDbError}/>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        const Class4Dashboard = (props) => <DashboardWrapper {...props} isClass4={true} />;
+        const PublicDashboard = (props) => <DashboardWrapper {...props} isClass4={false} />;
+
+        // ==========================================
+        // 채팅 시스템 핵심 기능
+        // ==========================================
+        function LiveChatSystem({ chat, db, appId, room, userName, setDbError }) {
+          const [msg, setMsg] = useState('');
+          const chatRef = useRef(null);
+
+          useEffect(() => {
+            if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+          }, [chat]);
+
+          const handleSend = async (e) => {
+            e.preventDefault();
+            if (!msg.trim()) return;
+            
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'chats'), {
+                    room,
+                    sender: userName,
+                    text: msg,
+                    time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                    timestamp: Date.now()
+                });
+                setMsg('');
+            } catch(e) {
+                setDbError(e.message);
+            }
+          };
+
+          return (
+            <div className="flex flex-col h-full bg-white flex-1 overflow-hidden">
+              <div className="flex-1 p-4 overflow-y-auto space-y-3" ref={chatRef}>
+                {chat.length === 0 && <div className="text-center text-gray-400 text-xs py-10">실시간 대화에 참여해보세요!</div>}
+                {chat.map(c => (
+                  <div key={c.id} className={`flex flex-col ${c.sender === userName ? 'items-end' : 'items-start'}`}>
+                    <span className="text-[9px] text-gray-400 mb-0.5">{c.sender}</span>
+                    <div className={`px-3 py-1.5 rounded-xl max-w-[85%] text-xs ${c.sender === userName ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-800'}`}>
+                      {c.text}
+                    </div>
+                    <span className="text-[8px] text-gray-400 mt-0.5">{c.time}</span>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={handleSend} className="p-2 border-t flex gap-2 items-center bg-gray-50">
+                <input 
+                  type="text" value={msg} onChange={e => setMsg(e.target.value)}
+                  placeholder="실시간 메시지 입력..." 
+                  className="flex-1 border p-1.5 rounded-full px-4 text-xs focus:outline-none focus:border-emerald-500"
+                />
+                <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white p-1.5 rounded-full w-8 h-8 flex items-center justify-center">
+                  <Icon icon="fa-paper-plane" size={11} />
+                </button>
+              </form>
+            </div>
+          );
+        }
+
+        // ==========================================
+        // 주가 변동 차트 컴포넌트
+        // ==========================================
+        function SimpleGraph({ history, color = "#10b981", height = 80 }) {
+          if (!history || history.length === 0) return null;
+          const min = Math.min(...history) * 0.95;
+          const max = Math.max(...history) * 1.05;
+          const range = max - min === 0 ? 1 : max - min;
+          
+          const points = history.map((val, idx) => {
+            const x = (idx / (history.length - 1)) * 100;
+            const y = 100 - ((val - min) / range) * 100;
+            return `${x},${y}`;
+          }).join(' ');
+
+          return (
+            <svg width="100%" height={height} viewBox="0 0 100 100" preserveAspectRatio="none" className="overflow-visible pt-1">
+              <polyline points={points} fill="none" stroke={color} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+            </svg>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
